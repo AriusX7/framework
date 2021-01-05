@@ -37,7 +37,7 @@
 #![warn(missing_docs)]
 
 use serenity::model::channel::Message;
-use serenity::prelude::{Context as SerenityContext, Mutex, RwLock};
+use serenity::prelude::{Context as SerenityContext, RwLock};
 
 use std::error::Error as StdError;
 use std::sync::Arc;
@@ -73,7 +73,7 @@ pub type DefaultError = Box<dyn StdError + Send + Sync>;
 #[derive(Clone)]
 pub struct Framework<D = DefaultData, E = DefaultError> {
     /// Configuration of the framework that dictates its behaviour.
-    pub conf: Arc<Mutex<Configuration<D, E>>>,
+    pub conf: Arc<Configuration<D, E>>,
     /// User data that is accessable in every command and function hook.
     pub data: Arc<RwLock<D>>,
 }
@@ -113,7 +113,7 @@ impl<D, E> Framework<D, E> {
     #[inline]
     pub fn with_arc_data(conf: Configuration<D, E>, data: Arc<RwLock<D>>) -> Self {
         Self {
-            conf: Arc::new(Mutex::new(conf)),
+            conf: Arc::new(conf),
             data,
         }
     }
@@ -132,51 +132,40 @@ impl<D, E> Framework<D, E> {
         ctx: &SerenityContext,
         msg: &Message,
     ) -> Result<(Context<D, E>, CommandFn<D, E>), DispatchError> {
-        let (func, command_id, prefix, args) = {
-            let conf = self.conf.lock().await;
-
-            let (prefix, content) = match parse::content(&self.data, &conf, &ctx, &msg).await {
-                Some(pair) => pair,
-                None => return Err(DispatchError::NormalMessage),
-            };
-
-            let mut segments = Segments::new(&content, " ", conf.case_insensitive);
-
-            let mut command = None;
-
-            for cmd in parse::commands(&conf, &mut segments) {
-                let cmd = cmd?;
-
-                command_check(&self.data, &conf, &ctx, &msg, cmd).await?;
-
-                command = Some(cmd);
-            }
-
-            let command = match command {
-                Some(cmd) => cmd,
-                None => return Err(DispatchError::PrefixOnly(prefix.to_string())),
-            };
-
-            let args = segments.source();
-
-            (
-                command.function,
-                command.id,
-                prefix.to_string(),
-                args.to_string(),
-            )
+        let (prefix, content) = match parse::content(&self.data, &self.conf, &ctx, &msg).await {
+            Some(pair) => pair,
+            None => return Err(DispatchError::NormalMessage),
         };
+
+        let mut segments = Segments::new(&content, " ", self.conf.case_insensitive);
+
+        let mut command = None;
+
+        for cmd in parse::commands(&self.conf, &mut segments) {
+            let cmd = cmd?;
+
+            command_check(&self.data, &self.conf, &ctx, &msg, cmd).await?;
+
+            command = Some(cmd);
+        }
+
+        let command = match command {
+            Some(cmd) => cmd,
+            None => return Err(DispatchError::PrefixOnly(prefix.to_string())),
+        };
+
+        let args = segments.source();
 
         let ctx = Context {
             data: Arc::clone(&self.data),
             conf: Arc::clone(&self.conf),
             serenity_ctx: ctx.clone(),
-            command_id,
-            prefix,
-            args,
+            command_id: command.id,
+            prefix: prefix.to_string(),
+            args: args.to_string(),
         };
 
-        Ok((ctx, func))
+        Ok((ctx, command.function))
     }
 }
 
